@@ -1,0 +1,438 @@
+import socket
+import time
+import json
+import os
+from email.mime.application import MIMEApplication
+from email.mime.multipart import MIMEMultipart
+from email.mime.base import MIMEBase
+from email.mime.text import MIMEText
+from email import encoders
+from email import parser
+
+with open('config.json') as config_file:
+    config_data = json.load(config_file)
+
+general_config = config_data.get('General', {})
+
+USERNAME= general_config.get('Username', '')
+PASS = general_config.get('Password', '')
+mailserver = general_config.get('MailServer', '')
+SMTP = general_config.get('SMTP', 0)
+POP3 = general_config.get('POP3', 0)
+Autoload = general_config.get('Autoload', 0)
+
+    
+def menu():
+    print("1. Để gửi email")
+    print("2. Để tải email")
+    print("3. Để xem danh sách các email đã nhận")
+    print("4. Quản lý trạng thái email (đã đọc/ chưa đọc)")
+    print("5. Xử lý lọc email")
+    print("6.Xử lý tự động tải email từ Mailbox theo thời gian")    
+    
+    
+    print("0. Thoát")
+   
+
+menu()
+option = int(input("Vui lòng chọn Menu: "))  
+            
+def send_email():
+            # Get user input for email details
+            
+            print("This is the information to compose an email: (If not filled in, please press enter to skip)")
+            to = input("Enter TO email addresses (comma-separated): ").split(',')
+            cc = input("Enter CC email addresses (comma-separated): ").split(',')
+            bcc = input("Enter BCC email addresses (comma-separated): ").split(',')
+
+            subject = input("Enter email subject: ")
+            body = input("Enter email body: ")
+
+            attachments = input("Enter file paths to attach (comma-separated): ").split(',')
+
+            recipients = to + cc + bcc  # Combine all recipients
+
+            clientSocket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            clientSocket.connect((mailserver, SMTP))
+
+            recv = clientSocket.recv(1024).decode()
+            print(recv)
+            if recv[:3] != '220':
+                print('220 reply not received from server.')
+
+            heloCommand = 'HELO\r\n'
+            clientSocket.send(heloCommand.encode())
+            recv1 = clientSocket.recv(1024).decode()
+            print(recv1)
+            if recv1[:3] != '250':
+                print('250 reply not received from server.')
+
+            mailFromCommand = 'MAIL FROM: <{}>\r\n'.format(USERNAME)
+            clientSocket.send(mailFromCommand.encode())
+            recv2 = clientSocket.recv(1024).decode()
+            print(recv2)
+            if recv2[:3] != '250':
+                print('250 reply not received from server.')
+
+            for recipient in recipients:
+                rcptToCommand = f'RCPT TO: <{recipient}>\r\n'
+                clientSocket.send(rcptToCommand.encode())
+                recv3 = clientSocket.recv(1024).decode()
+                print(recv3)
+                if recv3[:3] != '250':
+                    print(f'250 reply not received from server for {recipient}.')
+
+            dataCommand = 'DATA\r\n'
+            clientSocket.send(dataCommand.encode())
+            recv4 = clientSocket.recv(1024).decode()
+            print(recv4)
+            if recv4[:3] != '354':
+                print('354 reply not received from server.')
+
+            # Create a MIME object for the email
+            msg = MIMEMultipart()
+            msg['From'] = '<{}>\r\n'.format(USERNAME)
+            msg['To'] = ', '.join(to)
+            msg['Cc'] = ', '.join(cc)
+            msg['Subject'] = subject
+
+            # Attach the body of the email
+            msg.attach(MIMEText(body, 'plain'))
+
+            # Attach files
+            max_file_size = 3 * 1024 * 1024
+            for file_path in attachments:
+                try:
+                    file_size = os.path.getsize(file_path)
+                    if file_size <= max_file_size:
+                        attachment = MIMEApplication(open(file_path, 'rb').read())
+                        attachment.add_header('Content-Disposition', 'attachment', filename=file_path)
+                        msg.attach(attachment)
+                    else:
+                        print(f"Skipped attachment {file_path} due to exceeding size limit.")
+                except Exception as e:
+                        print(f"Error attaching file {file_path}: {str(e)}")
+            
+            clientSocket.send(msg.as_string().encode())
+            clientSocket.send('\r\n.\r\n'.encode())
+            recv5 = clientSocket.recv(1024).decode()
+            print(recv5)
+            if recv5[:3] != '250':
+                print('250 reply not received from server.')
+
+            quitCommand = 'QUIT\r\n'
+            clientSocket.send(quitCommand.encode())
+            recv6 = clientSocket.recv(1024).decode()
+            print(recv6)
+            if recv6[:3] != '221':
+                print('221 reply not received from server.')
+
+            clientSocket.close()
+
+def save_attachments_locally(email_content, message_number):
+    parser_instance = parser.Parser()
+    msg = parser_instance.parsestr(email_content)
+
+    for part in msg.walk():
+        if part.get_content_maintype() == 'multipart':
+            continue
+        filename = part.get_filename()
+        if filename:
+            with open(f"attachment_{message_number}_{filename}", 'wb') as file:
+                file.write(part.get_payload(decode=True))
+            print(f"Attachment saved locally: {filename}")
+
+def receive_email():
+    try:
+        clientSocket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        clientSocket.connect((mailserver, POP3))
+
+        recv = clientSocket.recv(1024).decode()
+        print(recv)
+        if recv[:3] != '+OK':
+            print('Connection error.')
+            return
+
+        # Log in to the server
+        user_command = f'USER {USERNAME}\r\n'
+        clientSocket.send(user_command.encode())
+        recv_user = clientSocket.recv(1024).decode()
+        print(recv_user)
+        if recv_user[:3] != '+OK':
+            print('Username not accepted.')
+            return
+
+        pass_command = f'PASS {PASS}\r\n'
+        clientSocket.send(pass_command.encode())
+        recv_pass = clientSocket.recv(1024).decode()
+        print(recv_pass)
+        if recv_pass[:3] != '+OK':
+            print('Password not accepted.')
+            return
+
+        # Retrieve email list
+        list_command = 'LIST\r\n'
+        clientSocket.send(list_command.encode())
+        recv_list = clientSocket.recv(1024).decode()
+        print(recv_list)
+
+        # Parse the email list to get message numbers
+        _, *email_list = recv_list.split('\r\n')[:-2]
+        message_numbers = [int(email.split()[0]) for email in email_list]
+
+        # Display basic information about each email
+        for message_number in message_numbers:
+            # Retrieve the email size
+            size_command = f"LIST {message_number}\r\n"
+            clientSocket.send(size_command.encode())
+            recv_size = clientSocket.recv(1024).decode()
+            email_size = int(recv_size.split()[2])
+
+            print(f"\nEmail {message_number} - Size: {email_size} bytes")
+
+            # Retrieve the full content of the email
+            retr_command = f"RETR {message_number}\r\n"
+            clientSocket.send(retr_command.encode())
+            email_content = clientSocket.recv(4096).decode()
+
+            # Process the email content based on user options
+            print("\nChoose an option:")
+            print("1. Tải nội dung email không kèm file")
+            print("2. Tải nội dung email có kèm file")
+            print("3. Tải nội dung email có kèm file và lưu file xuống máy cục bộ")
+
+            # Properly handle the input for the content_option
+            while True:
+                try:
+                    content_option = int(input("Vui lòng chọn tùy chọn (1-3): "))
+                    if 1 <= content_option <= 3:
+                        break
+                    else:
+                        print("Invalid option. Please enter a number between 1 and 3.")
+                except ValueError:
+                    print("Invalid input. Please enter a number.")
+
+            if content_option == 1:
+                 # Option 1: Display content without attachments
+                print("\nNội dung email:")
+                print(email_content)
+
+            elif content_option == 2:
+                 # Option 2: Display content with attachments
+                parser_instance = parser.Parser()
+                msg = parser_instance.parsestr(email_content)
+                for part in msg.walk():
+                    if part.get_content_maintype() == 'multipart':
+                            continue
+                    print(part.get_payload(decode=True).decode('utf-8'))
+
+            elif content_option == 3:
+                            # Option 3: Save attachments locally
+                            save_attachments_locally(email_content, message_number)
+
+    except Exception as e:
+        print(f"An error occurred: {e}")
+
+    finally:
+        # Quit the server connection
+        quit_command = 'QUIT\r\n'
+        clientSocket.send(quit_command.encode())
+        recv_quit = clientSocket.recv(1024).decode()
+        print(recv_quit)
+
+        clientSocket.close()
+
+
+
+def view_emails_in_folder():
+    clientSocket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    clientSocket.connect((mailserver, POP3))
+
+    recv = clientSocket.recv(1024).decode()
+    print(recv)
+    if recv[:3] != '+OK':
+        print('Connection error.')
+
+    # Log in to the server
+    user_command = f'USER {USERNAME}\r\n'
+    clientSocket.send(user_command.encode())
+    recv_user = clientSocket.recv(1024).decode()
+    print(recv_user)
+    if recv_user[:3] != '+OK':
+        print('Username not accepted.')
+
+    pass_command = f'PASS {PASS}\r\n'
+    clientSocket.send(pass_command.encode())
+    recv_pass = clientSocket.recv(1024).decode()
+    print(recv_pass)
+    if recv_pass[:3] != '+OK':
+        print('Password not accepted.')
+
+    # Retrieve email list
+    list_command = 'LIST\r\n'
+    clientSocket.send(list_command.encode())
+    recv_list = clientSocket.recv(1024).decode()
+    print(recv_list)
+
+    # Parse the email list to get message numbers
+    _, *email_list = recv_list.split('\r\n')[:-2]
+    message_numbers = [int(email.split()[0]) for email in email_list]
+
+    # Display basic information about each email
+    for message_number in message_numbers:
+        # Retrieve the email size
+        size_command = f"LIST {message_number}\r\n"
+        clientSocket.send(size_command.encode())
+        recv_size = clientSocket.recv(1024).decode()
+        email_size = int(recv_size.split()[2])
+
+        print(f"\nEmail {message_number} - Size: {email_size} bytes")
+
+    # Quit the server connection
+    quit_command = 'QUIT\r\n'
+    clientSocket.send(quit_command.encode())
+    recv_quit = clientSocket.recv(1024).decode()
+    print(recv_quit)
+
+    clientSocket.close()
+
+
+def list_email_status():
+    clientSocket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    clientSocket.connect((mailserver, POP3))
+
+    recv = clientSocket.recv(1024).decode()
+    print(recv)
+    if recv[:3] != '+OK':
+        print('Connection error.')
+
+    # Log in to the server
+    user_command = f'USER {USERNAME}\r\n'
+    clientSocket.send(user_command.encode())
+    recv_user = clientSocket.recv(1024).decode()
+    print(recv_user)
+    if recv_user[:3] != '+OK':
+        print('Username not accepted.')
+
+    pass_command = f'PASS {PASS}\r\n'
+    clientSocket.send(pass_command.encode())
+    recv_pass = clientSocket.recv(1024).decode()
+    print(recv_pass)
+    if recv_pass[:3] != '+OK':
+        print('Password not accepted.')
+
+    # Retrieve email list   
+    list_command = 'UIDL\r\n'
+    clientSocket.send(list_command.encode())
+    recv_list = clientSocket.recv(1024).decode()
+    print(recv_list)
+
+    # Parse the email list to get message numbers and UIDs
+    _, *email_list = recv_list.split('\r\n')[:-2]
+    email_data = [email.split() for email in email_list]
+    message_numbers = [int(data[0]) for data in email_data]
+    uids = [data[1] for data in email_data]
+
+    # Display the email list with message numbers and UIDs
+    print(f"\nDanh sách email (UIDs) trong hộp thư:")
+    for i, (message_number, uid) in enumerate(zip(message_numbers, uids), start=1):
+        print(f"{i}. Email {message_number} - UID: {uid}")
+
+    # Display the status of each email (read/unread)
+    print("\nTrạng thái của từng email:")
+    for uid in uids:
+        uidl_command = f'FETCH {uid} FLAGS\r\n'
+        clientSocket.send(uidl_command.encode())
+        recv_uidl = clientSocket.recv(1024).decode()
+
+        # Parse the flags response
+        flags = recv_uidl.split()[-1]
+
+        # Display read/unread status
+        read_status = "Đã đọc" if "\\Seen" in flags else "Chưa đọc"
+        print(f"Email UID {uid}: {read_status}")
+
+    # Quit the server connection
+    quit_command = 'LOGOUT\r\n'
+    clientSocket.send(quit_command.encode())
+    recv_quit = clientSocket.recv(1024).decode()
+    print(recv_quit)
+
+    clientSocket.close()
+
+def move_emails_to_folder(folder_name):
+    # Create the folder if it doesn't exist
+    if not os.path.exists(folder_name):
+        os.makedirs(folder_name)
+        
+received_emails = []        
+def filter_emails():
+    print("\nFiltering Options:")
+    print("1. Lọc email dựa trên địa chỉ người gửi")
+    print("2. Lọc email dựa trên subject")
+    print("3. Lọc email dựa trên nội dung")
+    print("4. Di chuyển email vào thư mục cụ thể/Spam")
+
+    filter_option = int(input("Vui lòng chọn tùy chọn lọc (1-4, nhấn enter để thoát): "))
+
+    if filter_option == 1:
+        filter_sender = input("Nhập địa chỉ người gửi để lọc: ")
+        # Implement filtering logic based on sender address
+        # Example: Iterate through received emails and filter based on sender address
+        for email in received_emails:
+            if filter_sender.lower() in email['from'].lower():
+                print(f"Email từ {email['from']} - Subject: {email['subject']}")
+
+    elif filter_option == 2:
+        filter_subject = input("Nhập subject để lọc: ")
+        # Implement filtering logic based on subject
+        # Example: Iterate through received emails and filter based on subject
+        for email in received_emails:
+            if filter_subject.lower() in email['subject'].lower():
+                print(f"Email từ {email['from']} - Subject: {email['subject']}")
+
+    elif filter_option == 3:
+        filter_content = input("Nhập nội dung để lọc: ")
+        # Implement filtering logic based on content
+        # Example: Iterate through received emails and filter based on content
+        for email in received_emails:
+            if filter_content.lower() in email['body'].lower():
+                print(f"Email từ {email['from']} - Subject: {email['subject']}")
+
+    elif filter_option == 4:
+        move_to_folder = input("Nhập tên thư mục để di chuyển email vào (ví dụ: Spam): ")
+        # Implement logic to move emails to the specified folder
+        # Example: Move emails to the "Spam" folder
+        move_emails_to_folder(move_to_folder)
+
+    else:
+        print("Lựa chọn không hợp lệ.")
+def auto_load_emails():
+    print(f"Setting up automatic email loading every {Autoload} seconds.")
+    
+    while True:
+        receive_email()
+        time.sleep(Autoload)
+
+while option != 0:
+    if option == 1:
+        send_email()
+    elif option == 2:
+        receive_email()
+    elif option == 3:
+        view_emails_in_folder()
+    elif option == 4:
+        list_email_status()
+    elif option == 5:
+        filter_emails()
+    elif option == 6:
+        auto_load_emails()
+    else:
+        print("Lựa chọn không hợp lệ. Vui lòng chọn lại.")
+
+    print()
+    menu()
+    option = int(input("Vui lòng chọn Menu: "))
+
+print("Cảm ơn bạn đã sử dụng!")
+        
