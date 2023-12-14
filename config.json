@@ -1,0 +1,11 @@
+{
+    "General": {
+      "Username": "longthang2401@gmail.com <Long Thắng>",
+      "Password": "Anhlanhat2401...",
+      "MailServer": "10.0.224.71",
+      "SMTP": 2225,
+      "POP3": 3335,
+      "Autoload": 10
+    }
+}
+  
